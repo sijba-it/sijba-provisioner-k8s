@@ -1,8 +1,13 @@
 """sijba-provisioner-k8s — order connectors for one sijba instance (single tenant)."""
 from __future__ import annotations
 
+import hashlib
 import hmac
+import logging
 import os
+import threading
+import time
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -11,6 +16,8 @@ from pydantic import BaseModel, Field
 from catalog import load_catalog
 from connectors import Connectors, ProvisionError, Settings
 from kube import KubeClient, KubeError
+
+log = logging.getLogger("provisioner")
 
 
 class PutBody(BaseModel):
@@ -80,12 +87,35 @@ def build_from_env() -> FastAPI:
         max_connectors=int(os.environ.get("MAX_CONNECTORS", "5")),
         core_check_url=os.environ.get("CORE_CHECK_URL", "").rstrip("/"),
     )
-    catalog = load_catalog(os.environ.get("CATALOG_FILE", "/catalog/catalog.json"))
-    return create_app(Connectors(kube, catalog, settings), token)
+    catalog_file = os.environ.get("CATALOG_FILE", "/catalog/catalog.json")
+    connectors = Connectors(kube, load_catalog(catalog_file), settings)
+    threading.Thread(target=watch_catalog, args=(connectors, catalog_file), daemon=True).start()
+    return create_app(connectors, token)
+
+
+def _digest(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def watch_catalog(connectors: Connectors, path: str, interval: float = 30.0) -> None:
+    # ConfigMap volumes update in place; pick up new image tags without a pod restart.
+    last = _digest(path)
+    while True:
+        time.sleep(interval)
+        try:
+            current = _digest(path)
+            if current == last:
+                continue
+            done = connectors.replace_catalog(load_catalog(path))
+            last = current
+            log.info("catalog reloaded, re-applied: %s", ", ".join(done) or "-")
+        except Exception:
+            log.exception("catalog reload failed")
 
 
 if __name__ == "__main__":
     import uvicorn
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
     uvicorn.run(build_from_env(),
                 host=os.environ.get("LISTEN_HOST", "127.0.0.1"),
                 port=int(os.environ.get("PORT", "8082")))

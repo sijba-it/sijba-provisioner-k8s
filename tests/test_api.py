@@ -97,10 +97,36 @@ def test_connector_limit(client, auth, kube, connectors):
 def test_list_shows_status_from_deployment(client, auth, kube):
     client.put("/connectors/pushover", json=ORDER, headers=auth)
     c = client.get("/connectors", headers=auth).json()["connectors"][0]
-    assert c["type"] == "pushover" and c["status"] == "starting"
+    assert c["type"] == "pushover" and c["status"] == "starting" and c["phase"] == "pending"
     kube.objs[("Deployment", "connector-pushover")]["status"] = {"readyReplicas": 1}
     c = client.get("/connectors", headers=auth).json()["connectors"][0]
-    assert c["status"] == "running"
+    assert c["status"] == "running" and c["phase"] == "ok"
+
+
+def _pod(reason):
+    return {"kind": "Pod", "metadata": {"name": "p", "labels": {"sijba.it/connector": "pushover"}},
+            "status": {"containerStatuses": [{"state": {"waiting": {"reason": reason}}}]}}
+
+
+@pytest.mark.parametrize("reason,phase", [
+    ("ContainerCreating", "pending"), ("ImagePullBackOff", "error"), ("CrashLoopBackOff", "error")])
+def test_phase_separates_waiting_from_failure(client, auth, kube, reason, phase):
+    client.put("/connectors/pushover", json=ORDER, headers=auth)
+    kube.objs[("Pod", "p")] = _pod(reason)
+    c = client.get("/connectors", headers=auth).json()["connectors"][0]
+    assert c["phase"] == phase and c["detail"] == reason
+
+
+def test_catalog_change_reapplies_active_connectors(client, auth, kube, connectors):
+    import copy
+    client.put("/connectors/pushover", json=ORDER, headers=auth)
+    new = copy.deepcopy(connectors.catalog)
+    new["pushover"]["image"] = "example/pushover:2"
+    assert connectors.replace_catalog(new) == ["pushover"]
+    c = kube.objs[("Deployment", "connector-pushover")]["spec"]["template"]["spec"]["containers"][0]
+    assert c["image"] == "example/pushover:2"
+    secret = kube.objs[("Secret", "connector-pushover")]["data"]
+    assert base64.b64decode(secret["PUSHOVER_APP_TOKEN"]) == b"app-123"
 
 
 def test_list_ignores_foreign_deployments(client, auth, kube):

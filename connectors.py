@@ -13,6 +13,11 @@ MANAGED_BY = "sijba-provisioner"
 LABEL_MANAGED = "app.kubernetes.io/managed-by"
 LABEL_TYPE = "sijba.it/connector"
 MAX_VALUE_LEN = 1024
+FAILURE_REASONS = {
+    "ErrImagePull", "ImagePullBackOff", "InvalidImageName", "CrashLoopBackOff",
+    "CreateContainerConfigError", "CreateContainerError", "RunContainerError",
+    "Error", "OOMKilled", "ContainerCannotRun",
+}
 
 
 class ProvisionError(Exception):
@@ -170,28 +175,30 @@ class Connectors:
         except Exception:
             return None
 
-    def _status(self, ctype: str, registered: set[str] | None) -> tuple[str, str]:
+    def _status(self, ctype: str, registered: set[str] | None) -> tuple[str, str, str]:
+        """(status, phase, detail); phase is ok | pending | error."""
         dep = self.kube.get("Deployment", object_name(ctype))
         if dep is None:
-            return "missing", ""
+            return "missing", "error", ""
         ready = (dep.get("status") or {}).get("readyReplicas", 0) or 0
-        detail = ""
         if not ready:
+            phase, detail = "pending", ""
             for pod in self.kube.list("Pod", f"{LABEL_TYPE}={ctype}"):
                 for cs in (pod.get("status") or {}).get("containerStatuses", []):
                     st = cs.get("state") or {}
                     w = st.get("waiting") or st.get("terminated") or {}
                     if w.get("reason"):
                         detail = w["reason"] + (f": {w['message']}" if w.get("message") else "")
-        if not ready:
-            return "starting", detail
+                        if w["reason"] in FAILURE_REASONS:
+                            phase = "error"
+            return "starting", phase, detail
         if registered is not None and ctype not in registered:
-            return "running", "not registered with Core yet"
-        return "running", ""
+            return "running", "pending", "not registered with Core yet"
+        return "running", "ok", ""
 
     def _view(self, ctype: str, fields: dict[str, str], registered: set[str] | None) -> dict:
         entry = self.catalog[ctype]
-        status, detail = self._status(ctype, registered)
+        status, phase, detail = self._status(ctype, registered)
         out = {}
         for f in entry["fields"]:
             value = fields.get(f["name"], "")
@@ -200,7 +207,7 @@ class Connectors:
                 item["value"] = value
             out[f["name"]] = item
         return {"type": ctype, "label": entry["label"], "status": status,
-                "detail": detail, "fields": out}
+                "phase": phase, "detail": detail, "fields": out}
 
     def list_active(self) -> list[dict]:
         registered = self._registered_ids()
@@ -231,6 +238,21 @@ class Connectors:
         for obj in render(ctype, entry, fields, self.s):
             self.kube.apply(obj)
         return self._view(ctype, fields, None)
+
+    def replace_catalog(self, catalog: dict[str, dict]) -> list[str]:
+        """Swap in a new catalog and re-apply active connectors (e.g. new image tag)."""
+        self.catalog = catalog
+        reapplied = []
+        for dep in self.kube.list("Deployment", f"{LABEL_MANAGED}={MANAGED_BY}"):
+            ctype = (dep["metadata"].get("labels") or {}).get(LABEL_TYPE, "")
+            existing = self._existing_fields(ctype) if ctype in catalog else None
+            if existing is None:
+                continue
+            fields = merge_fields(catalog[ctype], existing, {})
+            for obj in render(ctype, catalog[ctype], fields, self.s):
+                self.kube.apply(obj)
+            reapplied.append(ctype)
+        return reapplied
 
     def delete(self, ctype: str) -> None:
         self._entry(ctype)
