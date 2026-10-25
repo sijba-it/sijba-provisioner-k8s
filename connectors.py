@@ -239,17 +239,19 @@ class Connectors:
             self.kube.apply(obj)
         return self._view(ctype, fields, None)
 
-    def replace_catalog(self, catalog: dict[str, dict]) -> list[str]:
-        """Swap in a new catalog and re-apply active connectors (e.g. new image tag)."""
-        self.catalog = catalog
+    def reconcile(self) -> list[str]:
+        """Re-apply active connectors from the current catalog (new image pin, new token)."""
         reapplied = []
         for dep in self.kube.list("Deployment", f"{LABEL_MANAGED}={MANAGED_BY}"):
             ctype = (dep["metadata"].get("labels") or {}).get(LABEL_TYPE, "")
-            existing = self._existing_fields(ctype) if ctype in catalog else None
+            existing = self._existing_fields(ctype) if ctype in self.catalog else None
             if existing is None:
                 continue
-            fields = merge_fields(catalog[ctype], existing, {})
-            for obj in render(ctype, catalog[ctype], fields, self.s):
+            try:
+                fields = merge_fields(self.catalog[ctype], existing, {})
+            except ProvisionError:
+                continue  # e.g. a new required field: leave running until the user saves
+            for obj in render(ctype, self.catalog[ctype], fields, self.s):
                 self.kube.apply(obj)
             reapplied.append(ctype)
         return reapplied

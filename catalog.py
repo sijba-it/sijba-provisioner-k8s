@@ -40,11 +40,42 @@ def _check_entry(ctype: str, entry: dict) -> dict:
     return entry
 
 
-def load_catalog(path: str | Path) -> dict[str, dict]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def parse_catalog(data) -> dict[str, dict]:
     if not isinstance(data, dict):
         raise CatalogError("catalog must be an object keyed by connector type")
     return {t: _check_entry(t, e) for t, e in data.items()}
+
+
+def load_catalog(path: str | Path) -> dict[str, dict]:
+    return parse_catalog(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def image_env_name(ctype: str) -> str:
+    return "CONNECTOR_IMAGE_" + ctype.upper().replace("-", "_")
+
+
+def _with_tag(image: str) -> str:
+    last = image.rsplit("/", 1)[-1]
+    return image if ":" in last or "@" in last else image + ":latest"
+
+
+def build_catalog(catalog_dir: str | Path, env: dict[str, str]) -> dict[str, dict]:
+    """Built-in entries (one connector.json per file, collected at image build)
+    + CATALOG_EXTRA (JSON keyed by type, wins) + CONNECTOR_IMAGE_<TYPE> pins."""
+    raw: dict[str, dict] = {}
+    for p in sorted(Path(catalog_dir).glob("*.json")):
+        entry = json.loads(p.read_text(encoding="utf-8"))
+        raw[entry.pop("type", p.stem)] = entry
+    extra = env.get("CATALOG_EXTRA", "").strip()
+    if extra:
+        try:
+            raw.update(json.loads(extra))
+        except (ValueError, TypeError) as e:
+            raise CatalogError(f"CATALOG_EXTRA: {e}") from e
+    catalog = parse_catalog(raw)
+    for ctype, entry in catalog.items():
+        entry["image"] = _with_tag(env.get(image_env_name(ctype), "").strip() or entry["image"])
+    return catalog
 
 
 def public_view(ctype: str, entry: dict) -> dict:
