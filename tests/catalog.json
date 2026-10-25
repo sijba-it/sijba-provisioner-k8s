@@ -1,0 +1,15 @@
+{
+  "pushover": {
+    "label": "Pushover",
+    "description": "Push replies to your phone via your own Pushover account.",
+    "direction": "outbound",
+    "image": "ghcr.io/sijba-it/sijba-out-pushover:test",
+    "port": 9101,
+    "fields": [
+      {"name": "PUSHOVER_APP_TOKEN", "label": "App token", "secret": true, "required": true},
+      {"name": "PUSHOVER_USER_KEY", "label": "User key", "secret": true, "required": true},
+      {"name": "PUSHOVER_MATCH_SOURCES", "label": "Sources", "required": true, "default": "webhook:voice"},
+      {"name": "PUSHOVER_TITLE", "label": "Title", "default": "Sijba"}
+    ]
+  }
+}
