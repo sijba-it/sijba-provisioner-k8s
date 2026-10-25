@@ -117,16 +117,20 @@ def test_phase_separates_waiting_from_failure(client, auth, kube, reason, phase)
     assert c["phase"] == phase and c["detail"] == reason
 
 
-def test_catalog_change_reapplies_active_connectors(client, auth, kube, connectors):
-    import copy
+def test_reconcile_applies_new_image_pin_and_keeps_secrets(client, auth, kube, connectors):
     client.put("/connectors/pushover", json=ORDER, headers=auth)
-    new = copy.deepcopy(connectors.catalog)
-    new["pushover"]["image"] = "example/pushover:2"
-    assert connectors.replace_catalog(new) == ["pushover"]
+    connectors.catalog["pushover"]["image"] = "example/pushover:2"
+    assert connectors.reconcile() == ["pushover"]
     c = kube.objs[("Deployment", "connector-pushover")]["spec"]["template"]["spec"]["containers"][0]
     assert c["image"] == "example/pushover:2"
     secret = kube.objs[("Secret", "connector-pushover")]["data"]
     assert base64.b64decode(secret["PUSHOVER_APP_TOKEN"]) == b"app-123"
+
+
+def test_reconcile_skips_connector_missing_new_required_field(client, auth, kube, connectors):
+    client.put("/connectors/pushover", json=ORDER, headers=auth)
+    connectors.catalog["pushover"]["fields"].append({"name": "NEW_ONE", "required": True})
+    assert connectors.reconcile() == []
 
 
 def test_list_ignores_foreign_deployments(client, auth, kube):

@@ -39,19 +39,29 @@ Status is `starting` / `running` plus a `detail` (e.g. `ImagePullBackOff`, or
 | `CORE_TOKEN` | *(required)* | token connectors use to register with Core |
 | `CORE_URL` | `http://sijba.<ns>.svc.cluster.local:8080` | Core as seen from connector pods |
 | `CORE_CHECK_URL` | *(empty)* | Core as seen from here (e.g. `http://127.0.0.1:8080`), for the "registered" check |
-| `CATALOG_FILE` | `/catalog/catalog.json` | the catalog |
+| `CONNECTOR_IMAGE_<TYPE>` | `<image>:latest` | pin a connector image, e.g. `CONNECTOR_IMAGE_PUSHOVER=ghcr.io/sijba-it/sijba-out-pushover:202610252038` |
+| `CATALOG_EXTRA` | *(empty)* | JSON keyed by type: extra connectors, or overrides of built-in ones |
+| `CATALOG_DIR` | `/app/catalog.d` | built-in entries |
 | `MAX_CONNECTORS` | `5` | each one is a pod |
 | `LISTEN_HOST` / `PORT` | `127.0.0.1` / `8082` | the image sets `0.0.0.0` |
 | `NAMESPACE` | from service account | |
 
-Catalog format: see `tests/catalog.json`. Images come from the catalog only —
-the API cannot start arbitrary images.
+## Catalog
+
+Each connector image ships its order form as `/connector.json` (type, label,
+image, port, fields). The `Dockerfile` copies them into `catalog.d/` at build
+time (one `FROM` + `COPY` pair per connector), so nothing is fetched at runtime.
+New fields in a connector need a provisioner rebuild; a new connector version
+without new fields only needs a new `CONNECTOR_IMAGE_<TYPE>` pin.
+
+On start the provisioner re-applies active connectors from the catalog (new
+image pin, new Core token). A connector missing a newly required field is left
+as is until the user saves it. The API only starts images from the catalog.
 
 ## RBAC
 
 Namespaced `Role` only: `get/list/create/patch/delete` on `secrets`,
-`deployments`, `services`; `get/list` on `pods`. The manifests live in
-[sijba-k8s](../sijba-k8s).
+`deployments`, `services`; `get/list` on `pods`.
 
 ## Tests
 

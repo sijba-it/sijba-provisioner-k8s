@@ -1,19 +1,16 @@
 """sijba-provisioner-k8s — order connectors for one sijba instance (single tenant)."""
 from __future__ import annotations
 
-import hashlib
 import hmac
 import logging
 import os
 import threading
-import time
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from catalog import load_catalog
+from catalog import build_catalog
 from connectors import Connectors, ProvisionError, Settings
 from kube import KubeClient, KubeError
 
@@ -87,30 +84,21 @@ def build_from_env() -> FastAPI:
         max_connectors=int(os.environ.get("MAX_CONNECTORS", "5")),
         core_check_url=os.environ.get("CORE_CHECK_URL", "").rstrip("/"),
     )
-    catalog_file = os.environ.get("CATALOG_FILE", "/catalog/catalog.json")
-    connectors = Connectors(kube, load_catalog(catalog_file), settings)
-    threading.Thread(target=watch_catalog, args=(connectors, catalog_file), daemon=True).start()
+    catalog = build_catalog(os.environ.get("CATALOG_DIR", "/app/catalog.d"), dict(os.environ))
+    connectors = Connectors(kube, catalog, settings)
+    threading.Thread(target=reconcile_once, args=(connectors,), daemon=True).start()
     return create_app(connectors, token)
 
 
-def _digest(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def watch_catalog(connectors: Connectors, path: str, interval: float = 30.0) -> None:
-    # ConfigMap volumes update in place; pick up new image tags without a pod restart.
-    last = _digest(path)
-    while True:
-        time.sleep(interval)
-        try:
-            current = _digest(path)
-            if current == last:
-                continue
-            done = connectors.replace_catalog(load_catalog(path))
-            last = current
-            log.info("catalog reloaded, re-applied: %s", ", ".join(done) or "-")
-        except Exception:
-            log.exception("catalog reload failed")
+def reconcile_once(connectors: Connectors) -> None:
+    # Image pins and the Core token come from env; a changed env restarts the pod.
+    try:
+        done = connectors.reconcile()
+        log.info("catalog: %s; re-applied: %s",
+                 ", ".join(f"{t}={e['image']}" for t, e in connectors.catalog.items()),
+                 ", ".join(done) or "-")
+    except Exception:
+        log.exception("reconcile failed")
 
 
 if __name__ == "__main__":
