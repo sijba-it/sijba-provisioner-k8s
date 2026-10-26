@@ -92,6 +92,7 @@ def public_view(ctype: str, entry: dict) -> dict:
                 "secret": bool(f.get("secret")),
                 "required": bool(f.get("required")),
                 "default": f.get("default", ""),
+                "advanced": bool(f.get("advanced")),
             }
             for f in entry["fields"]
         ],
