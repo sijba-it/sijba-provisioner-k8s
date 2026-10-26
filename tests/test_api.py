@@ -17,6 +17,7 @@ def test_catalog_has_schema_but_no_internals(client, auth):
     names = [f["name"] for f in cat[0]["fields"]]
     assert "PUSHOVER_APP_TOKEN" in names
     assert "image" not in cat[0]
+    assert all(f["advanced"] is False for f in cat[0]["fields"])
 
 
 def test_activate_creates_secret_deployment_service(client, auth, kube):
